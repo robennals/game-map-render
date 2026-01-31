@@ -5,8 +5,39 @@ from typing import Optional
 
 
 @dataclass
+class ControlNetConfig:
+    """Configuration for ControlNet-based generation."""
+
+    # ControlNet Union model for segmentation-guided generation
+    controlnet_model: str = "xinsir/controlnet-union-sdxl-1.0"
+
+    # Base SDXL model (not turbo - need proper ControlNet support)
+    base_model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+
+    # How strictly to follow the segmentation map (0.0-1.0)
+    # Lower = more creative, higher = stricter adherence to map
+    conditioning_scale: float = 0.5
+
+    # Number of inference steps (more = better quality, slower)
+    num_inference_steps: int = 20
+
+    # Classifier-free guidance scale
+    guidance_scale: float = 7.5
+
+    # Use fp16 for reduced memory usage
+    use_fp16: bool = True
+
+    # Device to run on (None = auto-detect)
+    device: Optional[str] = None
+
+    # Output image dimensions
+    output_width: int = 1024
+    output_height: int = 768
+
+
+@dataclass
 class ModelConfig:
-    """Configuration for Stable Diffusion models."""
+    """Configuration for Stable Diffusion models (legacy tile-based approach)."""
 
     # Base model for generation - SDXL Turbo for fast iteration
     base_model: str = "stabilityai/sdxl-turbo"
@@ -98,6 +129,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
+    controlnet: ControlNetConfig = field(default_factory=ControlNetConfig)
 
     # Output settings
     output_dir: str = "./output"
