@@ -1,0 +1,25 @@
+{
+  "description": "A dark stone dungeon with torchlight casting flickering shadows",
+  "tiles": [
+    "WWWWWWWWWWWWWWWW",
+    "WSSSSSSSSSSSSSEW",
+    "WSSSSSSSSSSSSSEW",
+    "WSSSSWWWWWSSSSSW",
+    "WSSSSWLLLLWSSSSW",
+    "WPPPSWLLLLWPPPPW",
+    "WPPPSWWDDWWPPPPW",
+    "WPPPPSSDDSSSSSEW",
+    "WPPPPSSDDSSSSSSW",
+    "WPPPPSSDDSSSSSEW",
+    "WSSSSSSSSSSSSSEW",
+    "WWWWWWWWWWWWWWWW"
+  ],
+  "legend": {
+    "W": "wall",
+    "S": "stone",
+    "P": "path",
+    "L": "lava",
+    "D": "dirt",
+    "E": "stone"
+  }
+}

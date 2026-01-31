@@ -1,0 +1,24 @@
+{
+  "description": "A mystical forest glade at twilight with soft purple lighting and fireflies",
+  "tiles": [
+    "TTTTTTTTTTTTTTTT",
+    "TGGGGGGGGGGGGGGT",
+    "TGGGGWWWWGGGGPGT",
+    "TGGGWWWWWWGGGPGT",
+    "TGGGGWWWWGGGGPGT",
+    "TGGGGGGGGGGGPPGT",
+    "TGGGGGGGGGGPPGGT",
+    "TGGGGGGGGGPPGGGT",
+    "TGGGSSSSSSPPGGGT",
+    "TGGGSSSSSSPPGGGT",
+    "TGGGGGGGGGGGGGGT",
+    "TTTTTTTTTTTTTTTT"
+  ],
+  "legend": {
+    "T": "trees",
+    "G": "grass",
+    "W": "water",
+    "P": "path",
+    "S": "sand"
+  }
+}

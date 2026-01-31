@@ -1,0 +1,24 @@
+{
+  "description": "A sunny tropical beach with crystal clear water and palm trees at golden hour",
+  "tiles": [
+    "WWWWWWWWWWWWWWWW",
+    "WWWWWWWWWWWWWWWW",
+    "WWWWWWWWWWWWWWWW",
+    "SSWWWWWWWWWWWWSS",
+    "SSSSWWWWWWWWSSSS",
+    "SSSSSSWWWWSSSSSS",
+    "SSSSSSSSSSSSSSSS",
+    "GSSSSSSSSSSSSSSG",
+    "GGSSPPPPPPPPSSGG",
+    "GGGSPPPPPPPPSGTG",
+    "TGGGGGGGGGGGGGTG",
+    "TTTTTTTTTTTTTTTT"
+  ],
+  "legend": {
+    "W": "water",
+    "S": "sand",
+    "G": "grass",
+    "P": "path",
+    "T": "trees"
+  }
+}
