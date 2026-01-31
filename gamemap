@@ -128,20 +128,29 @@ def cmd_generate(args):
     import torch.nn.functional as F
     from diffusers import StableDiffusionXLPipeline
 
-    # Terrain prompts
+    # Terrain prompts - be specific and exclusive to avoid bleeding
     TERRAIN_PROMPTS = {
-        "trees": "dense forest with tall trees, lush green foliage",
-        "grass": "lush green grass field, meadow",
-        "water": "calm blue water, pond, lake surface",
-        "path": "dirt path, brown walking trail",
-        "sand": "sandy beach, golden sand",
-        "wall": "stone wall, gray bricks",
-        "lava": "molten lava, glowing orange magma",
-        "snow": "white snow, snowy ground",
-        "stone": "gray stone floor, rocky ground",
-        "dirt": "brown dirt, soil",
-        "bridge": "wooden bridge planks",
-        "flowers": "colorful wildflowers in grass",
+        "trees": "dense forest canopy, tall trees seen from above, green foliage, tree tops",
+        "grass": "flat green grass lawn, open meadow, no trees, short grass, empty field",
+        "water": "blue water surface, calm pond, lake water, reflective water",
+        "path": "brown dirt path, walking trail, bare earth trail",
+        "sand": "golden sand, sandy ground, beach sand, no grass",
+        "wall": "gray stone wall, brick wall, stone blocks",
+        "lava": "glowing orange lava, molten magma, bright orange",
+        "snow": "white snow covered ground, snowy surface",
+        "stone": "gray stone floor, cobblestone, rocky ground",
+        "dirt": "brown dirt ground, bare soil, mud",
+        "bridge": "wooden bridge planks, wooden boards",
+        "flowers": "colorful wildflowers, flower field",
+    }
+
+    # Per-terrain negative prompts to prevent bleeding
+    TERRAIN_NEGATIVES = {
+        "grass": "trees, forest, bushes, shrubs",
+        "water": "grass, land, trees",
+        "sand": "grass, trees, water",
+        "path": "grass, trees, water",
+        "stone": "grass, trees, plants",
     }
 
     print("Game Map Generator")
@@ -155,17 +164,21 @@ def cmd_generate(args):
     print(f"  Terrain types: {list(set(legend.values()))}")
 
     # Setup device
-    device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+    if args.cpu:
+        device = "cpu"
+    else:
+        device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\nUsing device: {device}")
 
-    # Load pipeline
+    # Load SDXL pipeline - good quality and prompt following
     print("\nLoading SDXL pipeline...")
+    # Use float32 on MPS to avoid NaN issues
     use_fp32 = device == "mps"
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         torch_dtype=torch.float32 if use_fp32 else torch.float16,
-        variant=None if use_fp32 else "fp16",
         use_safetensors=True,
+        variant=None if use_fp32 else "fp16",
     )
     pipe.enable_attention_slicing()
     pipe.to(device)
@@ -218,33 +231,46 @@ def cmd_generate(args):
 
     # Generate image
     print("\nGenerating image...")
-    model_dtype = next(pipe.unet.parameters()).dtype
-    negative_prompt = "cartoon, blurry, illustration, text, watermark, low quality"
-    base_style = f"aerial view, photorealistic, top-down, game map, {description}, high detail, seamless"
+    # Base style for all prompts
+    base_style = "aerial view, photorealistic, top-down, game map, high detail, seamless"
 
-    # Build prompts and masks
+    # Extract just lighting/mood words from description, avoid terrain words
+    # Common terrain words to filter out of atmosphere
+    terrain_words = {'forest', 'trees', 'grass', 'water', 'lake', 'pond', 'river',
+                     'sand', 'beach', 'stone', 'rock', 'path', 'road', 'snow', 'lava'}
+    desc_words = description.lower().split()
+    atmosphere_words = [w for w in description.split() if w.lower().strip(',.!') not in terrain_words]
+    atmosphere = ' '.join(atmosphere_words) if atmosphere_words else ""
+
+    base_negative = "cartoon, blurry, illustration, text, watermark, low quality"
+
+    # Build prompts and masks - put terrain content FIRST for stronger influence
     prompts = []
+    negatives = []
     masks_list = []
     for terrain, mask in terrain_masks.items():
         terrain_desc = TERRAIN_PROMPTS.get(terrain, terrain)
-        prompts.append(f"{terrain_desc}, {base_style}")
+        terrain_neg = TERRAIN_NEGATIVES.get(terrain, "")
+        # Terrain first, then style, then atmosphere
+        prompts.append(f"{terrain_desc}, {base_style}, {atmosphere}")
+        negatives.append(f"{base_negative}, {terrain_neg}" if terrain_neg else base_negative)
         masks_list.append(mask)
         coverage = mask.mean().item() * 100
         print(f"    {terrain}: {coverage:.1f}% coverage")
 
-    # Encode prompts
+    # Encode prompts for SDXL (dual text encoders)
     prompt_embeds_list = []
     pooled_embeds_list = []
-    for prompt in prompts:
+    for prompt, neg in zip(prompts, negatives):
         prompt_embeds, neg_embeds, pooled, neg_pooled = pipe.encode_prompt(
             prompt=prompt, prompt_2=prompt, device=device,
             num_images_per_prompt=1, do_classifier_free_guidance=True,
-            negative_prompt=negative_prompt, negative_prompt_2=negative_prompt,
+            negative_prompt=neg, negative_prompt_2=neg,
         )
         prompt_embeds_list.append(torch.cat([neg_embeds, prompt_embeds], dim=0))
         pooled_embeds_list.append(torch.cat([neg_pooled, pooled], dim=0))
 
-    # Prepare latent masks
+    # Prepare latent masks (SDXL uses 8x compression)
     latent_h, latent_w = args.height // 8, args.width // 8
     mask_tensors = []
     for mask in masks_list:
@@ -260,6 +286,7 @@ def cmd_generate(args):
     mask_tensors = [m / (mask_sum + 1e-8) for m in mask_tensors]
 
     # Setup diffusion
+    model_dtype = next(pipe.unet.parameters()).dtype
     pipe.scheduler.set_timesteps(args.steps, device=device)
     timesteps = pipe.scheduler.timesteps
 
@@ -269,6 +296,7 @@ def cmd_generate(args):
         generator=generator, device=device, dtype=model_dtype,
     ) * pipe.scheduler.init_noise_sigma
 
+    # SDXL additional conditioning
     text_encoder_projection_dim = pooled_embeds_list[0].shape[-1]
     add_time_ids = pipe._get_add_time_ids(
         original_size=(args.height, args.width),
@@ -279,36 +307,43 @@ def cmd_generate(args):
     ).to(device)
     add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
 
-    # Denoising loop
-    for i, t in enumerate(timesteps):
-        latent_model_input = torch.cat([latents] * 2)
-        latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, t)
+    # Denoising loop with regional prompt blending
+    with torch.no_grad():
+        for i, t in enumerate(timesteps):
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, t)
 
-        noise_preds = []
-        for prompt_embeds, pooled_embeds in zip(prompt_embeds_list, pooled_embeds_list):
-            noise_pred = pipe.unet(
-                latent_model_input, t,
-                encoder_hidden_states=prompt_embeds,
-                added_cond_kwargs={"text_embeds": pooled_embeds, "time_ids": add_time_ids},
-                return_dict=False,
-            )[0]
-            noise_preds.append(noise_pred)
+            noise_preds = []
+            for prompt_embeds, pooled_embeds in zip(prompt_embeds_list, pooled_embeds_list):
+                noise_pred = pipe.unet(
+                    latent_model_input, t,
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs={"text_embeds": pooled_embeds, "time_ids": add_time_ids},
+                    return_dict=False,
+                )[0]
+                noise_preds.append(noise_pred.clone())
 
-        blended_pred = torch.zeros_like(noise_preds[0])
-        for noise_pred, mask in zip(noise_preds, mask_tensors):
-            blended_pred += noise_pred * mask.unsqueeze(0).unsqueeze(0).expand_as(noise_pred)
+                # Clear MPS cache between forward passes
+                if device == "mps":
+                    torch.mps.empty_cache()
 
-        noise_pred_uncond, noise_pred_cond = blended_pred.chunk(2)
-        noise_pred = noise_pred_uncond + args.guidance * (noise_pred_cond - noise_pred_uncond)
-        latents = pipe.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            # Blend predictions based on terrain masks
+            blended_pred = torch.zeros_like(noise_preds[0])
+            for noise_pred, mask in zip(noise_preds, mask_tensors):
+                blended_pred += noise_pred * mask.unsqueeze(0).unsqueeze(0).expand_as(noise_pred)
 
-        if (i + 1) % 5 == 0:
-            print(f"    Step {i + 1}/{args.steps}")
+            noise_pred_uncond, noise_pred_cond = blended_pred.chunk(2)
+            noise_pred = noise_pred_uncond + args.guidance * (noise_pred_cond - noise_pred_uncond)
+            latents = pipe.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+            if (i + 1) % 5 == 0:
+                print(f"    Step {i + 1}/{args.steps}")
 
     # Decode
     latents = latents / pipe.vae.config.scaling_factor
-    image = pipe.vae.decode(latents.to(pipe.vae.dtype), return_dict=False)[0]
-    image = pipe.image_processor.postprocess(image, output_type="pil")[0]
+    with torch.no_grad():
+        image = pipe.vae.decode(latents.to(pipe.vae.dtype), return_dict=False)[0]
+    image = pipe.image_processor.postprocess(image.detach(), output_type="pil")[0]
 
     # Save outputs
     output_path = args.output or (output_dir / f"{args.tilemap.stem}_generated.png")
@@ -351,6 +386,7 @@ Examples:
     gen_parser.add_argument("--width", type=int, default=1024, help="Output width (default: 1024)")
     gen_parser.add_argument("--height", type=int, default=768, help="Output height (default: 768)")
     gen_parser.add_argument("--guidance", type=float, default=7.5, help="Guidance scale (default: 7.5)")
+    gen_parser.add_argument("--cpu", action="store_true", help="Force CPU (slower but more stable)")
     gen_parser.set_defaults(func=cmd_generate)
 
     # Visualize command
@@ -361,8 +397,8 @@ Examples:
     )
     vis_parser.add_argument("tilemap", type=Path, help="Path to tilemap JSON file")
     vis_parser.add_argument("-o", "--output", type=Path, help="Output image path")
-    vis_parser.add_argument("--width", type=int, default=1024, help="Output width (default: 1024)")
-    vis_parser.add_argument("--height", type=int, default=768, help="Output height (default: 768)")
+    vis_parser.add_argument("--width", type=int, default=512, help="Output width (default: 512)")
+    vis_parser.add_argument("--height", type=int, default=512, help="Output height (default: 512)")
     vis_parser.set_defaults(func=cmd_visualize)
 
     # Overlay command
