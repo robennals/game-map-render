@@ -127,30 +127,38 @@ def cmd_generate(args):
     import torch
     import torch.nn.functional as F
     from diffusers import StableDiffusionXLPipeline
+    from datetime import datetime
 
-    # Terrain prompts - be specific and exclusive to avoid bleeding
+    # Terrain prompts - emphasize distinct visual appearance for each
     TERRAIN_PROMPTS = {
-        "trees": "dense forest canopy, tall trees seen from above, green foliage, tree tops",
-        "grass": "flat green grass lawn, open meadow, no trees, short grass, empty field",
-        "water": "blue water surface, calm pond, lake water, reflective water",
-        "path": "brown dirt path, walking trail, bare earth trail",
-        "sand": "golden sand, sandy ground, beach sand, no grass",
-        "wall": "gray stone wall, brick wall, stone blocks",
-        "lava": "glowing orange lava, molten magma, bright orange",
-        "snow": "white snow covered ground, snowy surface",
-        "stone": "gray stone floor, cobblestone, rocky ground",
-        "dirt": "brown dirt ground, bare soil, mud",
-        "bridge": "wooden bridge planks, wooden boards",
-        "flowers": "colorful wildflowers, flower field",
+        "trees": "dark green forest canopy from above, dense treetops, shadowy woodland, dark foliage",
+        "grass": "bright green grass field, vibrant green meadow, manicured green lawn, open grassy area, no trees",
+        "water": "deep blue water, bright blue pond surface, clear blue lake, azure water with ripples",
+        "path": "brown dirt path, earthy brown trail, worn brown hiking path, brown earth road",
+        "sand": "light tan sandy beach, beige sand, pale yellow sand dunes, light colored sandy ground",
+        "wall": "gray stone wall texture, dark gray bricks",
+        "lava": "bright orange glowing lava, red-orange magma",
+        "snow": "pure white snow, bright white ground",
+        "stone": "gray cobblestone, dark gray rocky pavement",
+        "dirt": "dark brown dirt, brown soil, muddy brown earth",
+        "bridge": "tan wooden planks, light brown wooden boards",
+        "flowers": "colorful wildflowers in green grass",
     }
 
-    # Per-terrain negative prompts to prevent bleeding
+    # Negative prompts - strongly exclude wrong terrain types
     TERRAIN_NEGATIVES = {
-        "grass": "trees, forest, bushes, shrubs",
-        "water": "grass, land, trees",
-        "sand": "grass, trees, water",
-        "path": "grass, trees, water",
-        "stone": "grass, trees, plants",
+        "trees": "bare ground, water, sand, open field",
+        "grass": "trees, forest, treetops, foliage, woodland, water, sand, rocks, bushes, shrubs",
+        "water": "grass, trees, dry land, dirt",
+        "path": "water, trees, lush grass",
+        "sand": "grass, water, trees, green",
+        "wall": "plants, water, grass, trees",
+        "lava": "water, grass, ice, trees",
+        "snow": "green, warm, trees, grass",
+        "stone": "plants, water, trees, grass",
+        "dirt": "water, lush grass, trees",
+        "bridge": "water underneath, grass",
+        "flowers": "bare dirt, water, trees",
     }
 
     print("Game Map Generator")
@@ -170,9 +178,8 @@ def cmd_generate(args):
         device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\nUsing device: {device}")
 
-    # Load SDXL pipeline - good quality and prompt following
+    # Load SDXL pipeline with regional latent blending
     print("\nLoading SDXL pipeline...")
-    # Use float32 on MPS to avoid NaN issues
     use_fp32 = device == "mps"
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
@@ -210,6 +217,7 @@ def cmd_generate(args):
             align_corners=False,
         ).squeeze()
 
+        # Soft edges for natural blending
         kernel_size = max(3, args.width // tile_width // 2)
         if kernel_size % 2 == 0:
             kernel_size += 1
@@ -219,40 +227,41 @@ def cmd_generate(args):
         blurred = F.avg_pool2d(padded, kernel_size, stride=1).squeeze()
         terrain_masks[terrain] = blurred
 
-    # Output directory
-    output_dir = args.output.parent if args.output else Path("output")
-    output_dir.mkdir(exist_ok=True)
+    # Output directory - timestamped to avoid overwriting
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{args.tilemap.stem}_{timestamp}"
+    output_dir = Path("output") / run_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n    Output folder: {output_dir}")
 
     # Save tilemap visualization
     tilemap_vis = create_tilemap_visualization(tiles, legend, args.width, args.height)
-    tilemap_vis_path = output_dir / f"{args.tilemap.stem}_tilemap.png"
+    tilemap_vis_path = output_dir / "tilemap.png"
     tilemap_vis.save(tilemap_vis_path)
-    print(f"  Saved tilemap: {tilemap_vis_path}")
+    print(f"    Saved: {tilemap_vis_path}")
+
+    # Save individual masks for debugging
+    for terrain, mask in terrain_masks.items():
+        mask_img = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
+        mask_img.save(output_dir / f"mask_{terrain}.png")
+    print(f"    Saved masks for {len(terrain_masks)} terrain types")
 
     # Generate image
     print("\nGenerating image...")
-    # Base style for all prompts
-    base_style = "aerial view, photorealistic, top-down, game map, high detail, seamless"
 
-    # Extract just lighting/mood words from description, avoid terrain words
-    # Common terrain words to filter out of atmosphere
-    terrain_words = {'forest', 'trees', 'grass', 'water', 'lake', 'pond', 'river',
-                     'sand', 'beach', 'stone', 'rock', 'path', 'road', 'snow', 'lava'}
-    desc_words = description.lower().split()
-    atmosphere_words = [w for w in description.split() if w.lower().strip(',.!') not in terrain_words]
-    atmosphere = ' '.join(atmosphere_words) if atmosphere_words else ""
+    # Base style - focus on photorealism
+    base_style = "aerial drone photography, photorealistic, top-down view, high detail, natural daylight, 8k"
+    base_negative = "cartoon, painting, illustration, text, watermark, low quality, blurry, artificial, cgi"
 
-    base_negative = "cartoon, blurry, illustration, text, watermark, low quality"
-
-    # Build prompts and masks - put terrain content FIRST for stronger influence
+    # Build prompts and masks - terrain-specific prompts only, no shared atmosphere
     prompts = []
     negatives = []
     masks_list = []
     for terrain, mask in terrain_masks.items():
         terrain_desc = TERRAIN_PROMPTS.get(terrain, terrain)
         terrain_neg = TERRAIN_NEGATIVES.get(terrain, "")
-        # Terrain first, then style, then atmosphere
-        prompts.append(f"{terrain_desc}, {base_style}, {atmosphere}")
+        # Terrain description ONLY, no atmosphere bleeding
+        prompts.append(f"{terrain_desc}, {base_style}")
         negatives.append(f"{base_negative}, {terrain_neg}" if terrain_neg else base_negative)
         masks_list.append(mask)
         coverage = mask.mean().item() * 100
@@ -282,6 +291,7 @@ def cmd_generate(args):
         ).squeeze().to(device)
         mask_tensors.append(resized)
 
+    # Normalize masks so they sum to 1 at each pixel
     mask_sum = sum(mask_tensors)
     mask_tensors = [m / (mask_sum + 1e-8) for m in mask_tensors]
 
@@ -345,15 +355,15 @@ def cmd_generate(args):
         image = pipe.vae.decode(latents.to(pipe.vae.dtype), return_dict=False)[0]
     image = pipe.image_processor.postprocess(image.detach(), output_type="pil")[0]
 
-    # Save outputs
-    output_path = args.output or (output_dir / f"{args.tilemap.stem}_generated.png")
+    # Save outputs (always to timestamped folder)
+    output_path = output_dir / "generated.png"
     image.save(output_path)
     print(f"\nSaved: {output_path}")
 
     overlay = create_overlay(image, tilemap_vis, 0.4)
-    overlay_path = output_dir / f"{args.tilemap.stem}_overlay.png"
+    overlay_path = output_dir / "overlay.png"
     overlay.save(overlay_path)
-    print(f"Saved overlay: {overlay_path}")
+    print(f"Saved: {overlay_path}")
 
     print("\n" + "=" * 50)
     print("Generation complete!")
